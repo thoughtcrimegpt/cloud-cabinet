@@ -1,0 +1,5 @@
+# Set these in your own Worker, never commit real values.
+ACCESS_TEAM_DOMAIN=
+ACCESS_AUD=
+OWNER_EMAIL=
+# Gmail is optional. Add its three secrets only when following docs/gmail.md.

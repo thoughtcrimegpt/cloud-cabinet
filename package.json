@@ -1,0 +1,56 @@
+{
+  "name": "cloud-cabinet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "npm run build:web && wrangler dev --config wrangler.jsonc",
+    "build:web": "vite build",
+    "build": "npm run build:web && wrangler deploy --config wrangler.jsonc --dry-run --outdir .build",
+    "deploy": "npm run build:web && npm run db:migrate && wrangler deploy --config wrangler.jsonc --keep-vars",
+    "db:migrate": "wrangler d1 migrations apply DB --remote --config wrangler.jsonc",
+    "db:local": "wrangler d1 migrations apply DB --local --config wrangler.jsonc",
+    "types": "wrangler types --config wrangler.jsonc --include-runtime false --strict-vars false",
+    "check": "npm run types && tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/auth.test.mjs tests/customization.test.mjs tests/gmail.test.mjs tests/storage-security.test.mjs",
+    "test:runtime": "node --experimental-strip-types --test tests/runtime.test.mjs"
+  },
+  "dependencies": {
+    "jose": "6.2.12",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "lucide-react": "1.31.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260907.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3",
+    "vite": "8.0.13",
+    "wrangler": "4.129.1",
+    "miniflare": "5.20260907.0-alpha"
+  },
+  "cloudflare": {
+    "bindings": {
+      "FILES": {
+        "description": "Private files and immutable versions in your own R2 bucket."
+      },
+      "DB": {
+        "description": "Folder index, versions, and access rules in your own D1 database."
+      },
+      "OWNER_EMAIL": {
+        "description": "Your Cloudflare Access sign-in email. Stored as a Worker secret, never committed."
+      },
+      "ACCESS_TEAM_DOMAIN": {
+        "description": "Your https://TEAM.cloudflareaccess.com address. Complete Access setup after deployment."
+      },
+      "ACCESS_AUD": {
+        "description": "Audience tag from your Access application, set after deployment."
+      }
+    }
+  },
+  "license": "UNLICENSED"
+}

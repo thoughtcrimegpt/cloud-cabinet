@@ -1,0 +1,17 @@
+# API contract
+All /api routes require verified Cloudflare Access JWT, except GET /api/setup which reveals booleans only. One deployment is one private workspace. OWNER_EMAIL (normalized exact) is administrator. Other Access users see only entries shared with their email, inherited downward. No shared vendor backend.
+
+JSON errors {error: string}. Entry {id,parentId,name,kind:'file'|'folder',size,mime,currentVersion,createdAt,updatedAt,trashed,role:'owner'|'editor'|'viewer'}. Version {id,entryId,size,mime,createdAt,createdBy,source}. API uses camelCase. Dates ISO.
+GET /api/setup -> {configured:boolean}
+GET /api/me -> {email,isOwner,maxStorageBytes,maxUploadBytes}
+GET /api/entries?parent=<id or root>&q=<optional>&trash=1 -> {entries,ancestors:[{id,name}],usedBytes,limitBytes}. Owner root shows top entries; nonowner root lists highest directly shared entries. Search only across accessible entries. trash only owner. Pages contain at most 200 candidates, with nextOffset and truncated. Pass offset=nextOffset for the following page; refresh after concurrent changes. canCreate reports whether the current view allows new entries.
+POST /api/folders {parentId:'root'|id,name} -> {entry}
+POST /api/uploads {parentId,name,size,mime,entryId?:existing file,baseVersion?:current version} -> {uploadId,url}. New file reserved with UUID, not visible until ready. Existing file new version using optimistic baseVersion. PUT returned /api/uploads/:uploadId with raw file -> {entry}. UPLOAD MAX 20MiB for v0.1, no silent overwrite. Pending reserve atomic against MAX_STORAGE_BYTES, count all stored versions incl trash; uncompleted reservations expire only after object reconciliation.
+PATCH /api/entries/:id {name?,parentId?} -> {entry}. Move owner-only, no cycles, no move into trash. Rename editor permitted.
+POST /api/entries/:id/trash {} and /restore {}. Only owner can trash/restore folders (nonempty folder trash rejected); editors can trash file. Trash retained, no permanent deletion API v0.1.
+GET /api/entries/:id/download?version=<optional UUID> streamed with attachment disposition, nosniff; authorize entry on every request, never public bucket URL.
+GET /api/entries/:id/versions -> {versions}; POST /api/entries/:id/versions/:versionId/restore {baseVersion} points to old immutable content via new version; owner/editor only; conflicts409. No bytes duplicated for restore.
+GET /api/entries/:id/access -> {grants:[{email,role:'viewer'|'editor'}],inherited:boolean}; PUT same body {grants} owner-only; empty grants inherits parent grants, owner retains full access. Share does not email/invite and Access policy must separately admit recipient.
+GET /api/settings -> {companyName,accentColor,customCss}. PUT same owner-only. companyName max80, color valid hex, customCss max8000 enforced owner CSS security: no @import/url/external loads, reject closing style tags, reserved chrome not inside .brand-surface. CSS is validated server-side.
+GET /api/export -> owner-only metadata manifest (files and versions with object keys for own R2 backup, not signed URLs).
+GET /api/gmail/status -> {configured,connected,email?}; POST /api/gmail/connect -> {url}; GET /api/gmail/callback Google redirect; POST /api/gmail/disconnect; POST /api/gmail/import {parentId,label:'Cabinet'} -> {imported,skipped,remaining,issues}. Optional Gmail connector, owner-only, manually triggered, readonly, no cron. Tokens bound to owner, encrypted in D1. No Gmail data in logs.
