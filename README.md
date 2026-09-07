@@ -1,12 +1,12 @@
 # Cloud Cabinet
 
-**Private release candidate.** Public distribution and license terms are pending. The deployment link below is prepared for the public release and is not available to other users while this repository is private. No reuse or redistribution license has been granted yet.
+**Public beta, v0.1.0-beta.1.** Deploy your own private workspace. Read the current limits below and finish the Access setup before adding real files.
 
 A private file manager in **your own Cloudflare account**. Open it on your phone or computer. Keep your files, database, access policy, and optional Gmail connection under your control.
 
 This is an installable application, not a shared storage service. The project publisher does not host your files, receive your credentials, or bill you for storage.
 
-[Deploy to your Cloudflare account](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fthoughtcrimegpt%2Fcloud-cabinet)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fthoughtcrimegpt%2Fcloud-cabinet)
 
 The deployment flow copies this repository into your GitHub account and provisions the app, D1 database, and private R2 bucket. You must finish the [Access setup](docs/setup.md) before any file API can be used. **A successful deployment is not the same as a completed security setup.**
 
@@ -63,4 +63,4 @@ The build packages the browser interface and performs a Worker dry run. It does 
 
 React/Vite interface, Cloudflare Worker API, D1 file index, private R2 objects, Cloudflare Access JWT verification, and optional Google OAuth. All data requests go to the installation’s own origin. Each download is authorized by the Worker. The bucket must remain private.
 
-See [SECURITY.md](SECURITY.md) for the security model and reporting guidance. Public release terms will be added before distribution.
+See [SECURITY.md](SECURITY.md) for the security model and reporting guidance. Released under the [MIT license](LICENSE). You may use, modify, and redistribute the software, including commercially, while preserving the required license and copyright notices.
