@@ -16,7 +16,9 @@ If the deploy flow requires all three Access settings before the Access applicat
 
 ## 3. Protect the hostname
 
-In the Worker’s settings, enable Cloudflare Access protection for its `workers.dev` hostname. In Cloudflare Zero Trust, configure the resulting self-hosted Access application for the **entire exact hostname**, including `/api/*`. Allow only the owner’s email to start. An email one-time PIN can be used as the identity provider.
+Open your Worker’s **Access** tab, choose **Protect this Worker behind Access**, and select **All traffic**. The default **Previews only** option does not protect the production app. Choose an Allow policy restricted to the owner’s email, then apply Access. Some dashboard versions place this control under Settings or Domains instead.
+
+In Cloudflare Zero Trust, review the resulting self-hosted Access application. Protection must cover the entire production app, including `/api/*`. Allow only the owner’s email to start. An email one-time PIN can be used as the identity provider. If the Deploy form offers **Protect with Cloudflare Access**, you can enable it there and review its scope and policy after deployment.
 
 Record the team domain (`https://YOUR-TEAM.cloudflareaccess.com`) and the application’s audience (AUD) tag. Do not use an Access Bypass or Everyone policy. Leave preview URLs disabled. If you add a custom domain, protect that hostname too and confirm the correct audience tag.
 
@@ -38,6 +40,43 @@ Upload a small test file, download it, upload a new version, and restore the old
 
 Then bookmark the app on your computer or use your phone browser’s Add to Home Screen action. It remains a web app requiring an internet connection.
 
+### Manual CLI installation
+
+If the Deploy button is unavailable or is connected to the wrong GitHub account, deploy a private clone with Wrangler:
+
+```sh
+git clone https://github.com/thoughtcrimegpt/cloud-cabinet.git
+cd cloud-cabinet
+# Use Node.js >= 22.13.0, as required by package.json.
+npm ci
+npx wrangler login
+```
+
+Create fresh resources in your own Cloudflare account. Use unique names, and keep these resources separate from any other application:
+
+```sh
+npx wrangler d1 create YOUR_UNIQUE_D1_NAME
+npx wrangler r2 bucket create YOUR_UNIQUE_R2_BUCKET_NAME
+```
+
+Edit `wrangler.jsonc` using the D1 command's returned UUID and names you created. Replace `name`, `d1_databases[0].database_name`, `d1_databases[0].database_id`, and `r2_buckets[0].bucket_name`; keep the `DB` and `FILES` binding names. Do not commit personal resource IDs or deployment-specific values to a public clone. Keep your configured clone private and do not mix its database or bucket with another app.
+
+Create a local `.env` file containing the placeholders below. Until the Access application exists, these values keep authentication disabled:
+
+```dotenv
+ACCESS_TEAM_DOMAIN=not-configured
+ACCESS_AUD=not-configured
+OWNER_EMAIL=not-configured
+```
+
+Deploy the app and upload those values as Worker secrets:
+
+```sh
+npm run deploy -- --secrets-file .env
+```
+
+`npm run deploy` builds the web app, applies the remote D1 migrations, and deploys the Worker. After completing step 3, replace the placeholders with the real values using `wrangler secret put` again (or `wrangler secret bulk` with a local, uncommitted `.env` or JSON file), then run `npm run deploy` again. Never commit that secrets file.
+
 ## Add teammates
 
 First allow each person through Cloudflare Access. Then, as the workspace owner, use Manage access on a file or folder to grant Viewer or Editor. Being admitted through Access alone does not grant access to files. Sharing inside the app does not send an invitation or change your Access policy.
@@ -45,6 +84,9 @@ First allow each person through Cloudflare Access. Then, as the workspace owner,
 ## Official references
 
 - [Deploy buttons and automatic provisioning](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/)
+- [Create a D1 database with Wrangler](https://developers.cloudflare.com/d1/wrangler-commands/#d1-create)
+- [Create an R2 bucket with Wrangler](https://developers.cloudflare.com/r2/buckets/create-buckets/)
 - [Protect a Worker with Access](https://developers.cloudflare.com/workers/configuration/cloudflare-access/)
 - [Access JWT verification](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)
 - [Worker secrets](https://developers.cloudflare.com/workers/configuration/secrets/)
