@@ -12,3 +12,11 @@ dist/
 *.tsbuildinfo
 .DS_Store
 worker-configuration.d.ts
+
+# Local backup snapshots and recovery credentials must never be public.
+backups/
+backup.sql
+*.sqlite
+*.sqlite3
+__pycache__/
+*.pyc

@@ -137,3 +137,21 @@ test('mutating requests require exact same-origin even with a valid Access JWT',
   assert.equal(response.status, 403);
   assert.match((await response.json()).error, /origin/i);
 });
+
+test('maintenance keeps authenticated reads available and blocks writes and OAuth callbacks', async () => {
+  const { env, token } = await setup();
+  env.MAINTENANCE_MODE = 'true';
+  const assertion = await token('owner@example.com');
+  const headers = { Origin: 'https://cabinet.test', 'Cf-Access-Jwt-Assertion': assertion };
+  const me = await worker.fetch(new Request('https://cabinet.test/api/me', { headers }), env);
+  assert.equal(me.status, 200);
+  assert.equal((await me.json()).maintenance, true);
+  const files = await worker.fetch(new Request('https://cabinet.test/api/entries', { headers }), env);
+  assert.equal(files.status, 200);
+  for (const [path, method] of [['/api/folders', 'POST'], ['/api/gmail/callback?code=fake&state=fake', 'GET']]) {
+    const result = await worker.fetch(new Request('https://cabinet.test' + path, { method, headers }), env);
+    assert.equal(result.status, 503);
+  }
+  env.DB = { prepare() { throw Error('Maintenance must not poll Gmail'); } };
+  await worker.scheduled({}, env);
+});

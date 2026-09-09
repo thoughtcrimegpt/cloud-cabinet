@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 class Prepared {
@@ -103,24 +103,9 @@ export class MemoryR2 {
 
 export function makeEnv(options = {}) {
   const DB = new MemoryD1();
-  DB.exec(
-    readFileSync(
-      join(import.meta.dirname, '..', 'migrations', '0001_files.sql'),
-      'utf8',
-    ),
-  );
-  DB.exec(
-    readFileSync(
-      join(import.meta.dirname, '..', 'migrations', '0002_settings_gmail.sql'),
-      'utf8',
-    ),
-  );
-  DB.exec(
-    readFileSync(
-      join(import.meta.dirname, '..', 'migrations', '0003_storage_guard.sql'),
-      'utf8',
-    ),
-  );
+  for (const file of readdirSync(join(import.meta.dirname, '..', 'migrations')).filter(f => f.endsWith('.sql')).sort()) {
+    DB.exec(readFileSync(join(import.meta.dirname, '..', 'migrations', file), 'utf8'));
+  }
   return {
     DB,
     FILES: new MemoryR2(),

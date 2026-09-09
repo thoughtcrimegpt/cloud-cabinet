@@ -41,5 +41,8 @@
       "OWNER_EMAIL"
     ]
   },
-  "keep_vars": true
+  "keep_vars": true,
+  "triggers": {
+    "crons": []
+  }
 }

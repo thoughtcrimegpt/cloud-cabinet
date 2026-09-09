@@ -65,7 +65,8 @@ function importFetch({ messageFor, listFor }) {
       return Response.json({ labels: [{ id: 'LBL', name: 'Cabinet' }] });
     if (url.includes('/messages?')) return Response.json(listFor(url));
     const id = url.match(/messages\/([^?]+)/)?.[1] || '';
-    return Response.json(messageFor(id, data, bytes.length));
+    const message=messageFor(id, data, bytes.length);
+    return Response.json({...message, id:message.id ?? id});
   };
 }
 
@@ -168,7 +169,7 @@ test('callback exchanges code with PKCE, verifies readonly scope, and stores enc
   assert.equal(tokenBody.get('code_verifier')?.length, 43);
   assert.equal(tokenBody.get('code_verifier'), tokenBody.get('code_verifier'));
   const row = await env.DB.prepare(
-    'SELECT * FROM gmail_connection WHERE owner=?',
+    'SELECT * FROM gmail_mailboxes WHERE owner=?',
   )
     .bind(owner.email)
     .first();
@@ -204,6 +205,7 @@ test('manual readonly import is bounded and deduplicates the same Gmail attachme
     if (url.includes('/messages?'))
       return Response.json({ messages: [{ id: 'msg-1' }] });
     return Response.json({
+      id: url.match(/messages\/([^?]+)/)?.[1],
       payload: {
         parts: [
           {
@@ -349,6 +351,7 @@ test('transient provider failures preserve the Gmail cursor for retry', async ()
     if (url.includes('/messages?'))
       return Response.json({ messages: [{ id: 'retry' }] });
     return Response.json({
+      id: url.match(/messages\/([^?]+)/)?.[1],
       payload: {
         parts: [
           {

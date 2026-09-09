@@ -1,7 +1,8 @@
 import { authenticate, configured, validMutation } from './auth.ts';
 import { handleStorage } from './storage.ts';
 import { handleSettings } from './settings.ts';
-import { handleGmail } from './gmail.ts';
+import { handleGmail, runGmailSchedule } from './gmail.ts';
+import { handleWorkflows } from './workflows.ts';
 function secure(response: Response) {
   const headers = new Headers(response.headers);
   headers.set('X-Content-Type-Options', 'nosniff');
@@ -51,17 +52,25 @@ export default {
             { status: 403 },
           ),
         );
+      if (env.MAINTENANCE_MODE === 'true' &&
+          (!['GET', 'HEAD'].includes(request.method) || url.pathname === '/api/gmail/callback'))
+        return secure(Response.json(
+          { error: 'This cabinet is temporarily read-only for maintenance. Try again after the owner resumes writes.' },
+          { status: 503, headers: { 'Retry-After': '120' } },
+        ));
       if (url.pathname === '/api/me' && request.method === 'GET')
         return secure(
           Response.json({
             ...user,
             maxStorageBytes: Number(env.MAX_STORAGE_BYTES) || 10000000000,
             maxUploadBytes: 20 * 1024 * 1024,
+            maintenance: env.MAINTENANCE_MODE === 'true',
           }),
         );
       const result =
         (await handleSettings(request, env, user)) ||
         (await handleGmail(request, env, user)) ||
+        (await handleWorkflows(request, env, user)) ||
         (await handleStorage(request, env, user));
       return secure(
         result || Response.json({ error: 'Not found.' }, { status: 404 }),
@@ -79,5 +88,9 @@ export default {
         ),
       );
     }
+  },
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    if (!configured(env) || env.MAINTENANCE_MODE === 'true') return;
+    await runGmailSchedule(env);
   },
 } satisfies ExportedHandler<Env>;

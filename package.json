@@ -1,6 +1,6 @@
 {
   "name": "cloud-cabinet",
-  "version": "0.1.0-beta.1",
+  "version": "0.2.0-beta.1",
   "private": true,
   "type": "module",
   "engines": {
@@ -15,8 +15,9 @@
     "db:local": "wrangler d1 migrations apply DB --local --config wrangler.jsonc",
     "types": "wrangler types --config wrangler.jsonc --include-runtime false --strict-vars false",
     "check": "npm run types && tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/auth.test.mjs tests/customization.test.mjs tests/gmail.test.mjs tests/storage-security.test.mjs",
-    "test:runtime": "node --experimental-strip-types --test tests/runtime.test.mjs"
+    "test": "node --experimental-strip-types --test tests/auth.test.mjs tests/customization.test.mjs tests/gmail*.test.mjs tests/storage-security.test.mjs tests/workflows.test.mjs tests/folder-import.test.mjs",
+    "test:runtime": "node --experimental-strip-types --test tests/runtime.test.mjs",
+    "test:backup": "python3 -m unittest discover -s tests -p \"backup*.py\""
   },
   "dependencies": {
     "jose": "6.2.12",

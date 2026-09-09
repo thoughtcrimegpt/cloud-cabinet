@@ -7,7 +7,7 @@ This is a self-hosted file application, with one workspace per deployment. It is
 - The deployment owner has full access. Other identities need both Access admission and an effective app grant. A nearer nonempty grant list replaces inherited grants. Empty grants restore inheritance. Changes apply to subsequent requests; downloaded copies cannot be recalled.
 - Uploads reserve storage quota before accepting content. Every saved object has a unique immutable key and SHA-256 digest. Revision conflicts are rejected. Restoring content retains later history.
 - Mutating browser requests require an exact same-origin header. File content downloads as an attachment. Custom CSS uses a narrow scoped grammar and cannot load external resources or replace login and sharing controls.
-- Optional Gmail imports use the operator's OAuth client with read-only scope, single-use state, PKCE, and AES-GCM encryption of stored refresh tokens. Tokens and encryption keys are never included in exports of the file index. Complete database backups can contain encrypted tokens.
+- Optional Gmail imports use the operator's OAuth client with read-only scope, single-use state, PKCE, and AES-GCM encryption of stored refresh tokens. Multiple mailboxes are isolated by identity and label cursor. Background polling is explicitly enabled by the owner, and review decisions bind to a source fingerprint and current queue version. Tokens and encryption keys are never included in exports of the file index. Complete database backups can contain encrypted tokens.
 
 ## Operator responsibilities
 

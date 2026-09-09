@@ -1,6 +1,6 @@
 import type { User } from './auth.ts';
 type Role = 'owner' | 'editor' | 'viewer';
-type Entry = {
+export type Entry = {
   id: string;
   parent_id: string | null;
   name: string;
@@ -161,7 +161,7 @@ async function ancestry(env: Env, entry: Entry, allowSelfTrash = false) {
   }
   return chain;
 }
-async function role(
+export async function role(
   env: Env,
   entry: Entry,
   user: User,
@@ -183,7 +183,7 @@ async function role(
   }
   return null;
 }
-async function authorized(
+export async function authorized(
   env: Env,
   id: string,
   user: User,
@@ -453,7 +453,9 @@ async function saveUpload(
   upload: Upload,
   bytes: Uint8Array,
   token: string,
+  importGuard?: () => Promise<void>,
 ) {
+  await importGuard?.();
   if (bytes.length !== upload.size)
     throw new StorageError('Uploaded size does not match the reserved file.');
   if (upload.expires_at < now())
@@ -512,6 +514,7 @@ async function saveUpload(
   else await parentAllowed(env, entry.parent_id, user);
   const versionId = crypto.randomUUID(),
     timestamp = now();
+  await importGuard?.();
   await commit(env, token, [
     env.DB.prepare(
       'INSERT INTO versions(id,entry_id,object_key,size,mime,created_at,created_by,source,sha256) SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM entries WHERE id=? AND current_version IS ? AND trashed=0)',
@@ -594,15 +597,22 @@ export async function importFile(
   mime: string,
   data: ArrayBuffer | Uint8Array,
   source: string,
+  guard?: () => Promise<void>,
 ): Promise<{ entryId: string }> {
   if (!user.isOwner || !source.startsWith('gmail://')) deny();
   return locked(env, async (token) => {
+    await guard?.();
     const prior = await env.DB.prepare(
       'SELECT entry_id FROM versions WHERE source=?',
     )
       .bind(source)
       .first<{ entry_id: string }>();
-    if (prior) return { entryId: prior.entry_id };
+    if (prior) {
+      const existing = await row(env, prior.entry_id);
+      if (guard && existing?.parent_id !== root(parent))
+        throw new StorageError('This attachment was already filed in another folder. Move the existing file instead.', 409);
+      return { entryId: prior.entry_id };
+    }
     const digest = Array.from(
       new Uint8Array(
         await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source)),
@@ -613,6 +623,8 @@ export async function importFile(
     let upload = await env.DB.prepare('SELECT * FROM uploads WHERE source=?')
       .bind(source)
       .first<Upload>();
+    if (upload && upload.parent_id !== root(parent))
+      throw new StorageError('This attachment upload was reserved for another folder. Retry its original destination, then move the saved file.', 409);
     if (!upload) {
       const parentId = root(parent);
       await parentAllowed(env, parentId, user);
@@ -642,11 +654,13 @@ export async function importFile(
       upload,
       data instanceof Uint8Array ? data : new Uint8Array(data),
       token,
+      guard,
     );
     return { entryId: result.entryId };
   });
 }
-async function permissionMap(
+export { locked as withStorageLock };
+export async function permissionMap(
   env: Env,
   ids: string[],
   user: User,
@@ -1037,6 +1051,9 @@ async function exportIndex(env: Env, user: User) {
       source: v.source,
     })),
     grants: (await env.DB.prepare('SELECT * FROM grants').all()).results,
+    projects: (await env.DB.prepare('SELECT * FROM workflow_projects').all()).results,
+    checklists: (await env.DB.prepare('SELECT * FROM workflow_checklists').all()).results,
+    evidenceReviews: (await env.DB.prepare('SELECT * FROM workflow_reviews').all()).results,
   });
 }
 export async function handleStorage(

@@ -81,6 +81,12 @@ npm run deploy -- --secrets-file .env
 
 First allow each person through Cloudflare Access. Then, as the workspace owner, use Manage access on a file or folder to grant Viewer or Editor. Being admitted through Access alone does not grant access to files. Sharing inside the app does not send an invitation or change your Access policy.
 
+## Import an existing filing system
+
+From Files, open the destination and choose **Upload folder** in a desktop browser that supports directory selection. This preserves relative subfolders, up to 2,000 files per batch and 20 MiB per file. Keep the page open until the batch finishes. Empty folders cannot be supplied by the browser directory picker.
+
+Existing folders are reused. Name conflicts, unsupported paths, and failed or oversized uploads are reported, with existing files preserved. A retry does not silently overwrite a file. Use Upload new version for an intentional revision. Keep original files and compare the resulting counts before treating a migration as complete. Phones can upload individual files through their browser file picker; folder selection support depends on the browser.
+
 ## Official references
 
 - [Deploy buttons and automatic provisioning](https://developers.cloudflare.com/workers/platform/deploy-buttons/)

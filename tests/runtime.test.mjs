@@ -8,6 +8,7 @@ import {
   Response as MfResponse,
 } from 'miniflare';
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
+import { migrationStatements } from './sql.mjs';
 
 test(
   'built Worker enforces access and immutable history with real D1 and R2',
@@ -49,10 +50,7 @@ test(
     for (const file of readdirSync(join(root, 'migrations'))
       .filter((n) => n.endsWith('.sql'))
       .sort()) {
-      const statements = readFileSync(join(root, 'migrations', file), 'utf8')
-        .split(';')
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const statements = migrationStatements(readFileSync(join(root, 'migrations', file), 'utf8'));
       await db.batch(statements.map((sql) => db.prepare(sql)));
     }
     const tokens = new Map();

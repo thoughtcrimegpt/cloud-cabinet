@@ -21,6 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import './styles.css';
+import { importFolder } from './folder-import.ts';
 type Entry = {
   id: string;
   parentId: string | null;
@@ -38,6 +39,7 @@ type Me = {
   isOwner: boolean;
   maxUploadBytes: number;
   maxStorageBytes: number;
+  maintenance?: boolean;
 };
 type Branding = { companyName: string; accentColor: string; customCss: string };
 type Listing = {
@@ -56,6 +58,8 @@ type Version = {
   createdBy: string;
   source: string;
 };
+type Project = { id:string; folderId:string; name:string; stage:string; archived:boolean };
+type ProjectDetail = { project:Project; filesScanned:number; inventoryCapped:boolean; checklist:Array<{id:string;name:string;pattern:string;required:boolean;applicability:string;status:string;candidates:Array<{entryId:string;name:string;currentVersion:string;downloadUrl:string;status:string}>}> };
 const DOCS = 'https://github.com/thoughtcrimegpt/cloud-cabinet/blob/main/docs/';
 const defaults: Branding = {
   companyName: 'Cloud Cabinet',
@@ -240,6 +244,30 @@ function Login() {
     </main>
   );
 }
+function ProjectDashboard({ owner, openFolder }: { owner:boolean; openFolder:(id:string)=>void }) {
+  const [archived,setArchived]=useState(false), [projects,setProjects]=useState<Project[]>([]), [selected,setSelected]=useState<ProjectDetail|null>(null), [error,setError]=useState(''), [loading,setLoading]=useState(false), [folders,setFolders]=useState<Entry[]>([]), [folderId,setFolderId]=useState(''), [newName,setNewName]=useState(''), [stage,setStage]=useState('ready_to_launch'), [pattern,setPattern]=useState(''), [checkName,setCheckName]=useState(''), [editingChecklist,setEditingChecklist]=useState<string|null>(null), [checkRequired,setCheckRequired]=useState(false), [checkStage,setCheckStage]=useState('always');
+  const load=async()=>{setLoading(true); try{const r=await api<{projects:Project[]}>(`/api/projects${archived?'?archived=1':''}`);setProjects(r.projects);if(owner&&!archived){const f=await api<{entries:Entry[]}>('/api/entries?parent=root');setFolders(f.entries.filter(e=>e.kind==='folder'));}}catch(e){setError(message(e));}finally{setLoading(false);}};
+  useEffect(()=>{void load();},[archived]);
+  const open=async(p:Project)=>{setLoading(true);try{setSelected(await api<ProjectDetail>(`/api/projects/${p.id}`));}catch(e){setError(message(e));}finally{setLoading(false);}};
+  const create=async()=>{try{const r=await api<{project:Project}>('/api/projects',{folderId,name:newName,stage});setNewName('');await load();}catch(e){setError(message(e));}};
+  const replaceChecklist=async(items:ProjectDetail['checklist'])=>{
+    if(!selected || loading)return;
+    setLoading(true);setError('');
+    try {
+      await api(`/api/projects/${selected.project.id}/checklists`,{checklists:items.map(c=>({id:c.id||undefined,name:c.name,pattern:c.pattern,required:c.required,applicability:c.applicability||'always'}))},'PUT');
+      setSelected(await api<ProjectDetail>(`/api/projects/${selected.project.id}`));
+      setCheckName('');setPattern('');setEditingChecklist(null);
+    } catch(e){setError(message(e));} finally {setLoading(false);}
+  };
+  const saveChecklist=async()=>{
+    if(!selected||!checkName.trim()||!pattern.trim())return;
+    const item={id:editingChecklist||'',name:checkName,pattern,required:checkRequired,applicability:checkStage,status:'unassessed',candidates:[]};
+    await replaceChecklist(editingChecklist?selected.checklist.map(c=>c.id===editingChecklist?item:c):[...selected.checklist,item]);
+  };
+
+  const saveStage=async()=>{if(!selected)return;try{await api(`/api/projects/${selected.project.id}`,{stage},'PATCH');setSelected(await api<ProjectDetail>(`/api/projects/${selected.project.id}`));await load();}catch(e){setError(message(e));}};
+  return <section className="project-dashboard" aria-label="Projects"><div className="project-toolbar"><div><p className="eyebrow">PROJECTS</p><h1>Project dashboard</h1><p className="muted">Keep current work together. Checklist matches need a content review; they do not verify signatures or completeness.</p></div><button className="button subtle" onClick={()=>{setSelected(null);setArchived(!archived);}}>{archived?'Current projects':'Closed and archived'}</button></div>{error&&<Notice text={error}/>} {!selected&&<>{owner&&!archived&&<div className="project-create"><strong>Designate an existing folder</strong><DestinationPicker value={folderId} onChange={setFolderId} disabled={loading}/><input aria-label="Project name" placeholder="Project name (optional)" value={newName} onChange={e=>setNewName(e.target.value)}/><select aria-label="Project stage" value={stage} onChange={e=>setStage(e.target.value)}>{['ready_to_launch','active','under_contract','closing','closed','archived'].map(s=><option key={s} value={s}>{s.replaceAll('_',' ')}</option>)}</select><button className="button primary" disabled={!folderId||loading} onClick={()=>void create()}>Create project</button></div>}<div className="project-grid">{loading?<p>Loading projects…</p>:projects.length?projects.filter(p=>archived||!['closed','archived'].includes(p.stage)).map(p=><button className="project-card" key={p.id} onClick={()=>{setStage(p.stage);void open(p);}}><strong>{p.name}</strong><span>{p.stage.replaceAll('_',' ')}</span><small>{p.archived?'Archived':'Current'}</small></button>):<div className="empty"><Folder size={30}/><h2>No projects yet</h2><p>{owner?'Designate a project from an existing folder to begin.':'Projects shared with you will appear here.'}</p></div>}</div></>}{selected&&<div><button className="button subtle" onClick={()=>setSelected(null)}>Back to projects</button><button className="button subtle" onClick={()=>openFolder(selected.project.folderId)}>Open project folder</button>{owner&&<div className="project-edit"><label>Stage<select value={stage} onChange={e=>setStage(e.target.value)}>{['ready_to_launch','active','under_contract','closing','closed','archived'].map(s=><option key={s} value={s}>{s.replaceAll('_',' ')}</option>)}</select></label><button className="button subtle" disabled={loading} onClick={()=>void saveStage()}>Save stage</button></div>}<div className="project-detail"><h2>{selected.project.name}</h2><p className="muted">Stage: {selected.project.stage.replaceAll('_',' ')} · {selected.filesScanned} files scanned{selected.inventoryCapped?' · inventory capped, more files may exist':''}</p>{selected.inventoryCapped&&<p className="notice">This inventory reached its safety limit. Missing evidence cannot be concluded from this scan.</p>}{owner&&<div className="project-edit"><input aria-label="Checklist name" placeholder="Checklist name" value={checkName} onChange={e=>setCheckName(e.target.value)}/><input aria-label="Filename pattern" placeholder="Filename pattern, for example *.pdf" value={pattern} onChange={e=>setPattern(e.target.value)}/><button className="button subtle" disabled={loading||!checkName.trim()||!pattern.trim()} onClick={()=>void saveChecklist()}>Save checklist</button><label>Applies at<select value={checkStage} onChange={e=>setCheckStage(e.target.value)}>{['always','ready_to_launch','active','under_contract','closing','closed','archived'].map(s=><option key={s} value={s}>{s.replaceAll('_',' ')}</option>)}</select></label><label><input type="checkbox" checked={checkRequired} onChange={e=>setCheckRequired(e.target.checked)}/> Required in your process</label><small className="muted">Patterns support * and ?. Filename matches need a content review.</small></div>}{selected.checklist.map(c=><article className="checklist-card" key={c.id}><div><strong>{c.name}</strong>{owner&&<><button className="button subtle" disabled={loading} onClick={()=>{setEditingChecklist(c.id);setCheckName(c.name);setPattern(c.pattern);setCheckRequired(c.required);setCheckStage(c.applicability||'always');}}>Edit checklist item</button><button className="button subtle" disabled={loading} onClick={()=>void replaceChecklist(selected.checklist.filter(item=>item.id!==c.id))}>Retire item</button></>}<span>{c.required?'Required · ':''}{c.pattern} · {c.applicability||'always'}</span></div><b className={`check-status ${c.status}`}>{c.status==='confirmed'?'Evidence reviewed':c.status.replaceAll('_',' ')}</b>{c.candidates.map(f=><div className="evidence-row" key={f.entryId}><a href={f.downloadUrl}>{f.name}</a><span>{f.status==='confirmed'?'Reviewed by owner':f.status.replaceAll('_',' ')}</span><small>Review applies to this file version</small>{owner&&f.status==='needs_review'&&<button className="button subtle" onClick={()=>void api(`/api/projects/${selected.project.id}/checklists/${c.id}`,{entryId:f.entryId,version:f.currentVersion,action:'confirmed'},'POST').then(()=>open(selected.project)).catch(e=>setError(message(e)))}>Mark evidence reviewed</button>}</div>)}</article>)}</div></div>}</section>;
+}
 function App() {
   const [state, setState] = useState<
       'loading' | 'setup' | 'login' | 'ready' | 'error'
@@ -263,6 +291,7 @@ function App() {
     [busy, setBusy] = useState(false),
     [progress, setProgress] = useState(''),
     [navigation, setNavigation] = useState(false);
+  const [projectMode,setProjectMode]=useState(false);
   const [selected, setSelected] = useState<Entry | null>(null),
     [dialog, setDialog] = useState<
       | 'folder'
@@ -277,6 +306,7 @@ function App() {
       | null
     >(null);
   const uploadRef = useRef<HTMLInputElement>(null),
+    folderUploadRef = useRef<HTMLInputElement>(null),
     newVersionRef = useRef<HTMLInputElement>(null),
     activeRequest = useRef(0),
     loadedFilter = useRef({ parent: 'root', trash: false, query: '' });
@@ -462,15 +492,17 @@ function App() {
         </div>
       </header>
       <div className="body">
+        {me?.maintenance && <div className="maintenance-banner" role="status">Maintenance mode is active. Files and project settings are temporarily read-only.</div>}
         <aside className={`sidebar ${navigation ? 'open' : ''}`}>
           <p className="side-label">Workspace</p>
           <button
             className={`side-link ${!trash ? 'active' : ''}`}
-            onClick={() => go()}
+            onClick={() => {setProjectMode(false); go();}}
           >
             <HardDrive size={17} />
             {me?.isOwner ? 'All files' : 'Shared with me'}
           </button>
+          <button className={`side-link ${projectMode ? 'active' : ''}`} onClick={() => {setProjectMode(true);setNavigation(false);}}><Folder size={17}/>Projects</button>
           {me?.isOwner && (
             <>
               <button
@@ -526,7 +558,7 @@ function App() {
           </a>
         </aside>
         <main className="content">
-          <div className="page-head">
+          {!projectMode && <div className="page-head">
             <div>
               <p className="eyebrow">
                 {trash ? 'RETAINED FILES' : 'PRIVATE WORKSPACE'}
@@ -560,8 +592,12 @@ function App() {
                 <Upload size={17} />
                 Upload
               </button>
+              <button className="button subtle" disabled={busy || !listing.canCreate || trash} onClick={() => folderUploadRef.current?.click()}>
+                Upload folder
+              </button>
             </div>
-          </div>
+          </div>}
+          {projectMode ? <ProjectDashboard owner={!!me?.isOwner} openFolder={(id) => { setProjectMode(false); go(id); }}/> : <>
           <form
             className="search-row"
             onSubmit={(e) => {
@@ -702,7 +738,7 @@ function App() {
                 </div>
               )}
             </div>
-          </section>
+          </section></>}
         </main>
       </div>
       <input
@@ -714,6 +750,7 @@ function App() {
           if (f) void sendFile(f);
         }}
       />
+      <input type="file" hidden ref={folderUploadRef} {...({ webkitdirectory: 'true', directory: 'true' } as React.InputHTMLAttributes<HTMLInputElement>)} onChange={(e) => { const files=Array.from(e.target.files || []); e.target.value=''; void mutate(async()=>{ try { const result=await importFolder(files,parent,api,setProgress); setError(result.errors.length ? `${result.saved} saved. ${result.errors.length} could not be uploaded. ${result.errors.slice(0,8).join(' ')}` : ''); } finally {setProgress('');} }).catch(()=>{}); }} />
       <input
         type="file"
         hidden
@@ -1421,157 +1458,31 @@ function BrandDialog({
     </Modal>
   );
 }
-function GmailDialog({
-  parent,
-  close,
-  changed,
-}: {
-  parent: string;
-  close: () => void;
-  changed: () => void;
-}) {
-  const [status, setStatus] = useState<{
-      configured: boolean;
-      connected: boolean;
-      email?: string;
-    } | null>(null),
-    [label, setLabel] = useState('Cabinet'),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(''),
-    [result, setResult] = useState<{
-      imported: number;
-      skipped: number;
-      remaining: boolean;
-      issues: string[];
-    } | null>(null);
-  useEffect(() => {
-    api<NonNullable<typeof status>>('/api/gmail/status')
-      .then(setStatus)
-      .catch((e) => setError(message(e)));
-  }, []);
-  const run = async (fn: () => Promise<void>) => {
-    setBusy(true);
-    setError('');
-    try {
-      await fn();
-    } catch (e) {
-      setError(message(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <Modal title="Import from Gmail" close={close} busy={busy}>
-      <div className="modal-body">
-        <p className="muted">
-          Save attachments from a Gmail label into the current folder. This is a
-          manual, read-only import. Your inbox is never modified.
-        </p>
-        {!status && !error && <p>Checking connection…</p>}
-        {status && !status.configured && (
-          <p>
-            Gmail is optional. Follow the guide to add your own Google project
-            and secrets before connecting.
-          </p>
-        )}
-        <a href={DOCS + 'gmail.md'} target="_blank" rel="noreferrer">
-          Gmail setup guide
-        </a>
-        {status?.connected && (
-          <>
-            <p>Connected: {status.email}</p>
-            <label>
-              Gmail label
-              <input
-                value={label}
-                onChange={(e) => {
-                  setLabel(e.target.value);
-                  setResult(null);
-                }}
-                disabled={busy}
-              />
-            </label>
-          </>
-        )}
-        {result && (
-          <div role="status">
-            <p>
-              {result.imported} files saved, {result.skipped} previously
-              imported attachments skipped.
-            </p>
-            <p>
-              {result.remaining
-                ? 'More attachments remain. Continue importing to process the next step.'
-                : 'This label scan is complete.'}
-            </p>
-            {result.issues.length > 0 && (
-              <ul>
-                {result.issues.map((issue, i) => (
-                  <li key={i}>{issue}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-        <Notice text={error} />
-      </div>
-      <div className="dialog-actions">
-        {status?.connected ? (
-          <>
-            <button
-              className="button subtle"
-              disabled={busy}
-              onClick={() =>
-                void run(async () => {
-                  await api('/api/gmail/disconnect', {});
-                  setStatus({ ...status, connected: false });
-                  setResult(null);
-                })
-              }
-            >
-              Disconnect
-            </button>
-            <button
-              className="button primary"
-              disabled={busy || !label.trim()}
-              onClick={() =>
-                void run(async () => {
-                  setResult(
-                    await api('/api/gmail/import', {
-                      parentId: parent,
-                      label: label.trim(),
-                    }),
-                  );
-                  changed();
-                })
-              }
-            >
-              {busy
-                ? 'Importing…'
-                : result?.remaining
-                  ? 'Continue import'
-                  : 'Import label'}
-            </button>
-          </>
-        ) : (
-          <button
-            className="button primary"
-            disabled={busy || !status?.configured}
-            onClick={() =>
-              void run(async () => {
-                const { url } = await api<{ url: string }>(
-                  '/api/gmail/connect',
-                  {},
-                );
-                location.assign(url);
-              })
-            }
-          >
-            Connect Gmail
-          </button>
-        )}
-      </div>
-    </Modal>
-  );
+type GmailMailbox = { mailboxId:string; email:string; enabled:boolean; labels:Array<{label:string;destinationId:string;scheduled:boolean;reviewOnly:boolean;enabled:boolean;lastRunAt:number|null;lastError:string|null}> };
+type GmailReview = { reviewId:string; mailboxId:string; identity:string; messageId:string; filename:string; mime:string; size:number; headers:{subject?:string;from?:string;date?:string}; destinationId:string|null; state:string; version:number; lastError:string|null };
+
+function DestinationPicker({ value, onChange, disabled = false }: { value:string; onChange:(id:string)=>void; disabled?:boolean }) {
+  const [folder, setFolder] = useState(value || 'root');
+  const [listing, setListing] = useState<Listing|null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => { let active = true; setListing(null); api<Listing>(`/api/entries?parent=${encodeURIComponent(folder)}`).then(d => { if (active) setListing(d); }).catch(e => { if (active) setError(message(e)); }); return () => { active = false; }; }, [folder]);
+  return <div className="destination-picker"><div className="destination-current"><span>{listing?.ancestors.map(a=>a.name).join(' / ') || 'All files'}</span><button type="button" className="button subtle" disabled={disabled || folder==='root'} onClick={()=>setFolder(listing?.ancestors.at(-2)?.id || 'root')}>Up</button></div><button type="button" className="button subtle" disabled={disabled || !listing} onClick={()=>onChange(folder)}>Use this folder</button><div className="folder-picker">{listing?.entries.filter(e=>e.kind==='folder').map(e=><button type="button" className={`button subtle ${value===e.id?'selected-folder':''}`} key={e.id} disabled={disabled} onClick={()=>{onChange(e.id);setFolder(e.id);}}><Folder size={15}/>{e.name}<ChevronRight size={15}/></button>)}</div>{listing?.nextOffset!==null&&listing?.nextOffset!==undefined&&<button type="button" className="button subtle" disabled={disabled} onClick={()=>api<Listing>(`/api/entries?parent=${encodeURIComponent(folder)}&offset=${listing.nextOffset}`).then(next=>setListing({...next,entries:[...(listing.entries||[]),...next.entries]})).catch(e=>setError(message(e)))}>Load more folders</button>}<p className="muted small-text">Selected folder: {value===folder ? (listing?.ancestors.map(a=>a.name).join(' / ') || 'All files') : 'Previously selected folder'}</p><Notice text={error}/></div>;
+}
+
+function GmailDialog({ parent, close, changed }: { parent:string; close:()=>void; changed:()=>void }) {
+  const [status,setStatus] = useState<{configured:boolean;mailboxes:GmailMailbox[];reviewCount:number}|null>(null);
+  const [mailboxId,setMailboxId] = useState(''); const [label,setLabel] = useState(''); const [destinationId,setDestinationId] = useState(parent);
+  const [scheduled,setScheduled] = useState(false); const [reviewOnly,setReviewOnly] = useState(true); const [enabled,setEnabled] = useState(true);
+  const [busy,setBusy] = useState(false); const [error,setError] = useState(''); const [result,setResult] = useState<{imported:number;skipped:number;remaining:boolean;issues:string[];queued?:number}|null>(null);
+  const [reviewState,setReviewState] = useState<'pending'|'deferred'|'filing'|'filed'|'dismissed'>('pending'); const [reviews,setReviews] = useState<GmailReview[]>([]); const [nextOffset,setNextOffset] = useState<number|null>(null);
+  const selectedMailbox = status?.mailboxes.find(m=>m.mailboxId===mailboxId);
+  const loadReviews = async (state=reviewState, offset=0) => { const r=await api<{reviews:GmailReview[];nextOffset:number|null}>(`/api/gmail/review?state=${state}&offset=${offset}`); setReviews(offset?[...reviews,...r.reviews]:r.reviews); setNextOffset(r.nextOffset); };
+  useEffect(() => { Promise.all([api<NonNullable<typeof status>>('/api/gmail/status'),api<{reviews:GmailReview[];nextOffset:number|null}>('/api/gmail/review?state=pending')]).then(([s,r])=>{setStatus(s);setMailboxId(s.mailboxes[0]?.mailboxId||'');setReviews(r.reviews);setNextOffset(r.nextOffset);}).catch(e=>setError(message(e))); }, []);
+  useEffect(() => { const scope=selectedMailbox?.labels.find(l=>l.label===label); setDestinationId(scope?.destinationId || parent); setScheduled(scope?.scheduled||false); setReviewOnly(scope?.reviewOnly ?? true); setEnabled(scope?.enabled ?? true); }, [mailboxId,label]);
+  const run = async (fn:()=>Promise<void>) => { if (busy) return; setBusy(true); setError(''); try { await fn(); } catch(e) { setError(message(e)); } finally { setBusy(false); } };
+  const connect = (another=false) => void run(async()=>{ const {url}=await api<{url:string}>('/api/gmail/connect', !another&&mailboxId?{mailboxId}:{}); location.assign(url); });
+  const saveConfig = () => void run(async()=>{ if(!mailboxId||!label.trim()||!destinationId) throw new Error('Choose a mailbox, label, and destination folder.'); await api(`/api/gmail/mailboxes/${encodeURIComponent(mailboxId)}/config`,{label:label.trim(),destinationId,scheduled,reviewOnly,enabled},'PUT'); const fresh=await api<NonNullable<typeof status>>('/api/gmail/status'); setStatus(fresh); });
+  const action = (r:GmailReview, name:'assign'|'defer'|'dismiss') => void run(async()=>{ if(name==='assign'&&!destinationId) throw new Error('Choose a destination folder before filing.'); await api(`/api/gmail/review/${encodeURIComponent(r.reviewId)}/${name}`,{version:r.version,...(name==='assign'?{destinationId}:{})}); await loadReviews(reviewState); changed(); });
+  return <Modal title="Import from Gmail" close={close} busy={busy}><div className="modal-body"><p className="muted">Read-only Gmail import. Configure labels, choose a destination folder, then scan manually or review queued attachments before filing.</p><div className="gmail-actions"><a href={DOCS+'gmail.md'} target="_blank" rel="noreferrer">Gmail setup guide</a>{status?.configured&&<button type="button" className="button subtle" disabled={busy} onClick={()=>connect(true)}>Connect another mailbox</button>}</div>{!status&&!error&&<p>Checking connection…</p>}{status&&!status.configured&&<Notice text="Gmail is not configured yet. Add the OAuth client and encryption key using the setup guide."/>}{status?.mailboxes.map(m=><div className={`mailbox-card ${m.mailboxId===mailboxId?'selected':''}`} key={m.mailboxId}><label className="mailbox-choice"><input type="radio" checked={mailboxId===m.mailboxId} onChange={()=>{setMailboxId(m.mailboxId);setLabel('');}}/> <span><b>{m.email}</b><small>{m.labels.length} configured label{m.labels.length===1?'':'s'}</small></span></label>{m.mailboxId===mailboxId&&<button type="button" className="button subtle danger-text" disabled={busy} onClick={()=>void run(async()=>{await api(`/api/gmail/mailboxes/${encodeURIComponent(m.mailboxId)}`,{},'DELETE');setStatus({...status,mailboxes:status.mailboxes.filter(x=>x.mailboxId!==m.mailboxId)});setMailboxId('');setLabel('');})}>Disconnect</button>}</div>)}{status?.mailboxes.length===0&&status.configured&&<p className="empty-inline">No mailbox connected. Connect another mailbox to begin.</p>}{selectedMailbox&&<div className="gmail-config"><button type="button" className="button subtle" disabled={busy} onClick={()=>connect(false)}>Reconnect selected mailbox</button><label>Gmail label<input value={label} placeholder="Label, for example Cabinet" onChange={e=>setLabel(e.target.value)} disabled={busy}/></label><label>Destination folder<DestinationPicker value={destinationId} onChange={setDestinationId} disabled={busy}/></label><div className="toggle-row"><label><input type="checkbox" checked={reviewOnly} onChange={e=>setReviewOnly(e.target.checked)} disabled={busy}/> Review before filing</label><label><input type="checkbox" checked={scheduled} onChange={e=>setScheduled(e.target.checked)} disabled={busy}/> Scheduled scan</label><label><input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)} disabled={busy}/> Enabled</label></div><p className="muted small-text">Scheduled scans require the Cloudflare cron setup described in the Gmail setup guide.</p><button type="button" className="button subtle" disabled={busy||!label.trim()||!destinationId} onClick={saveConfig}>Save label rule</button>{selectedMailbox.labels.map(l=><div className="label-status" key={l.label}><span><b>{l.label}</b><small>{l.lastRunAt?`Last run ${new Date(l.lastRunAt).toLocaleString()}`:'Never scanned'}{l.lastError?` · ${l.lastError}`:''}</small></span><span>{l.reviewOnly?'Review first':'Automatic filing'}{l.scheduled?' · scheduled':''}</span></div>)}<button type="button" className="button primary" disabled={busy||!label.trim()||!destinationId} onClick={()=>void run(async()=>{setResult(await api('/api/gmail/import',{mailboxId,label:label.trim(),parentId:destinationId}));await loadReviews(reviewState); changed();})}>{busy?'Scanning…':result?.remaining?'Continue scan':'Scan label now'}</button></div>}{result&&<div className="import-result" role="status"><b>{result.imported} imported, {result.skipped} already handled{result.queued?`, ${result.queued} queued for review`:''}.</b>{result.remaining&&<p>More attachments remain. Scan again to continue.</p>}{result.issues.length>0&&<ul>{result.issues.map((i,n)=><li key={n}>{i}</li>)}</ul>}</div>}<div className="review-panel"><div className="review-head"><strong>Review queue</strong><div className="review-tabs">{(['pending','deferred','filing','filed','dismissed'] as const).map(s=><button type="button" className={reviewState===s?'active':''} key={s} disabled={busy} onClick={()=>{setReviewState(s);void run(()=>loadReviews(s));}}>{s}</button>)}</div></div>{reviews.length===0?<p className="muted">No {reviewState} items.</p>:reviews.map(r=><article className="review-card" key={r.reviewId}><div><b>{r.filename}</b><small>{r.headers.subject||'No subject'} · {r.headers.from||'Unknown sender'} · {r.headers.date||'Unknown date'}</small><small>{status?.mailboxes.find(m=>m.mailboxId===r.mailboxId)?.email||'Disconnected mailbox'} · {size(r.size)} · {r.state}{r.lastError?` · ${r.lastError}`:''}</small><a href={`https://mail.google.com/mail/?authuser=${encodeURIComponent(status?.mailboxes.find(m=>m.mailboxId===r.mailboxId)?.email||'') }#all/${encodeURIComponent(r.messageId)}`} target="_blank" rel="noreferrer">Open original in Gmail</a></div><div className="review-buttons">{(r.state==='pending'||r.state==='deferred'||r.state==='filing')&&<><button type="button" className="button primary" disabled={busy||!destinationId} onClick={()=>action(r,'assign')}>File here</button><button type="button" className="button subtle" disabled={busy} onClick={()=>action(r,'defer')}>Defer</button><button type="button" className="button subtle" disabled={busy} onClick={()=>action(r,'dismiss')}>Dismiss</button></>}</div></article>)}{nextOffset!==null&&<button type="button" className="button subtle" disabled={busy} onClick={()=>void loadReviews(reviewState,nextOffset)}>Load more</button>}</div><Notice text={error}/></div><div className="dialog-actions"><button type="button" className="button subtle" disabled={busy} onClick={close}>Done</button></div></Modal>;
 }
 createRoot(document.getElementById('root')!).render(<App />);

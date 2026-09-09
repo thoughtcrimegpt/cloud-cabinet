@@ -2,9 +2,11 @@
 
 One installation belongs entirely to its operator. The publisher has no access to recover your account, restore your files, or maintain your deployment. There is no central hosting subscription, but your own provider charges and operational work still apply.
 
+Use the included [backup and offline recovery tools](backup.md) for a verified snapshot. For upgrades, also read [the migration checklist](upgrade.md).
+
 ## Make a complete backup
 
-Pause file changes while taking a consistent backup. Keep these three things together in a private, dated backup location:
+Enable `MAINTENANCE_MODE=true`, wait at least ten minutes for in-flight work to finish, and pause external bucket/database writers while taking a consistent backup. Keep these three things together in a private, dated backup location:
 
 1. **The file index:** sign into the app as owner and choose Export file index. Save the JSON response. It maps human-readable names and folders to R2 object identifiers and every retained version. It also contains sharing rules and Gmail provenance, so treat it as private.
 2. **The D1 database:** from your own installation checkout, export the complete database with the command below. It includes settings and may contain an encrypted Gmail refresh token.
