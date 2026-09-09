@@ -1,5 +1,7 @@
 # Cloud Cabinet
 
+Media-drive engineering preview: authenticated ranged reads, resumable large uploads, and an optional read-only desktop client. See [scope, setup and remaining work](docs/media-drive.md). This branch is not a production LucidLink replacement.
+
 **Public beta, v0.2.0-beta.1.** A private file and project workspace in **your own Cloudflare account**, accessible from your phone or computer.
 
 Keep files, versions, permissions, project checklists, and optional Gmail attachment intake together. Each operator supplies their own Cloudflare resources and Google connection. The publisher does not host customer files, receive credentials, or run a shared backend.
@@ -35,7 +37,7 @@ Upgrading an existing installation? Read [the migration checklist](docs/upgrade.
 ## Boundaries
 
 - One deployment is one private workspace. Independent customers deploy separate copies.
-- Browser uploads and Gmail attachments are limited to **20 MiB each**. Multipart uploads for larger files are not implemented.
+- Browser uploads support **100 GiB per file** through resumable multipart uploads in this engineering preview. Gmail attachments retain their **20 MiB** limit.
 - The default quota is **10 GB**, including retained versions and trash. Owners can set another quota, including 1 TB. It is an application guard, not a provider billing cap.
 - Gmail polling is opt-in and bounded. It is periodic, not an instant push feed. Large backlogs take multiple runs; review exceptions and connection health.
 - Gmail is read-only. It never sends, deletes, archives, labels, or marks mail as read. Checklists do not determine legal status, deadlines, signature validity, or document approval.

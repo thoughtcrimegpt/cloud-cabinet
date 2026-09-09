@@ -43,3 +43,27 @@ Gmail is read-only. No tokens are returned in status or file-index exports. Full
 ## Maintenance
 
 Set `MAINTENANCE_MODE` to the string `true` to deny browser mutations and skip background polling. `/api/me` includes `maintenance`. Existing reads remain available. Wait for in-flight work before copying D1 and R2; see `docs/backup.md`.
+
+
+## Media-drive engineering preview
+
+All routes below retain Cloudflare Access identity checks. Mutations require
+an exact same-origin `Origin` header. Clients must never receive R2 credentials.
+
+- `GET` and `HEAD /api/entries/:id/download?version=:versionId`: immutable version
+  reads with `ETag`, `Accept-Ranges: bytes`, and `If-Match`. GET supports one byte
+  range (`206`); unsatisfiable ranges return `416` and `Content-Range: bytes */N`.
+  HEAD has no body. `If-Range` mismatch selects the complete representation.
+- `POST /api/multipart`: metadata `{name,parentId,size,mime,entryId?,baseVersion?}`.
+  Reserves the complete quota and returns `{uploadId,partSize}`. Maximum 100 GiB,
+  part size 16 MiB. Use the small upload endpoint for empty files.
+- `GET /api/multipart/:id`: creator-only status, metadata, expiry and
+  `parts: [{partNumber,size,etag,sha256}]`. Committed sessions report `completed`.
+- `PUT /api/multipart/:id/parts/:number`: binary part, numbered from 1. All parts
+  except the last must be 16 MiB. A repeated part must contain identical bytes.
+- `POST /api/multipart/:id/complete`: verifies parts and publishes an immutable
+  version using the original `baseVersion`; completion can be retried.
+- `DELETE /api/multipart/:id`: cancels an unfinished upload and releases its quota.
+
+Multipart versions deliberately have no whole-file SHA-256. Their ETags are not
+whole-file digests. The current global write lease limits concurrent throughput.

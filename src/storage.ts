@@ -36,8 +36,11 @@ type Upload = {
   created_by: string;
   source: string | null;
   expires_at: string;
+  multipart_id: string | null;
 };
 const MAX_UPLOAD = 20 * 1024 * 1024;
+export const MULTIPART_PART = 16 * 1024 * 1024;
+export const MAX_MULTIPART = 100 * 1024 * 1024 * 1024;
 const now = () => new Date().toISOString();
 const root = (id: unknown) =>
   typeof id === 'string' && id !== 'root' && id !== '' ? id : null;
@@ -275,6 +278,10 @@ async function cleanup(env: Env, token: string) {
       .all<Upload>()
   ).results;
   for (const upload of expired) {
+    if (upload.multipart_id) {
+      try { await env.FILES.resumeMultipartUpload(upload.object_key, upload.multipart_id).abort(); }
+      catch { continue; }
+    }
     const referenced = await env.DB.prepare(
       'SELECT id FROM versions WHERE object_key=? LIMIT 1',
     )
@@ -370,6 +377,7 @@ async function reserve(
   token: string,
   forcedId?: string,
   source?: string,
+  maxSize = MAX_UPLOAD,
 ) {
   const name = nameOf(data.name),
     size = data.size;
@@ -377,7 +385,7 @@ async function reserve(
     typeof size !== 'number' ||
     !Number.isSafeInteger(size) ||
     size < 0 ||
-    size > MAX_UPLOAD
+    size > maxSize
   )
     throw new StorageError('Upload size must be between zero and 20 MiB.');
   let existing: Entry | null = null;
@@ -414,7 +422,7 @@ async function reserve(
       existing?.current_version || null,
       user.email,
       timestamp,
-      new Date(Date.now() + 3600000).toISOString(),
+      new Date(Date.now() + (source?.startsWith('multipart:') ? 86400000 : 3600000)).toISOString(),
       source || null,
       size,
       quota(env),
@@ -446,6 +454,124 @@ async function reserve(
       413,
     );
   return upload;
+}
+
+async function multipartCreate(request: Request, env: Env, user: User, token: string) {
+  const data = await body(request), size = data.size;
+  if (typeof size !== 'number' || !Number.isSafeInteger(size) || size <= 0 || size > MAX_MULTIPART)
+    throw new StorageError('Multipart size must be greater than zero and at most 100 GiB.');
+  const id = crypto.randomUUID();
+  const upload = await reserve(env, user, data, token, id, `multipart:${id}`, MAX_MULTIPART);
+  let mp: R2MultipartUpload | undefined;
+  try {
+    mp = await env.FILES.createMultipartUpload(upload.object_key, {
+      httpMetadata: { contentType: upload.mime }, customMetadata: { cabinetUploadId: id },
+    });
+    await stillLocked(env, token);
+    await commit(env, token, [env.DB.prepare('UPDATE uploads SET multipart_id=? WHERE id=?').bind(mp.uploadId, id)]);
+    return json({ uploadId: id, partSize: MULTIPART_PART, maxSize: MAX_MULTIPART, maxParts: Math.ceil(size / MULTIPART_PART) }, 201);
+  } catch (error) {
+    // If abort fails, retain the reservation for operator/lifecycle recovery.
+    if (mp) await mp.abort();
+    await stillLocked(env, token);
+    await commit(env, token, [
+      env.DB.prepare('DELETE FROM uploads WHERE id=?').bind(id),
+      env.DB.prepare('DELETE FROM entries WHERE id=? AND current_version IS NULL').bind(id),
+    ]);
+    throw error;
+  }
+}
+async function multipartStatus(env: Env, user: User, id: string) {
+  const upload = await env.DB.prepare('SELECT * FROM uploads WHERE id=? AND created_by=?').bind(id, user.email).first<Upload>();
+  if (!upload || !upload.multipart_id) {
+    const done = await env.DB.prepare('SELECT entry_id FROM versions WHERE source=? AND created_by=?').bind(`multipart:${id}`, user.email).first<{entry_id:string}>();
+    if (!done) deny();
+    const entry = await authorized(env, done.entry_id, user, false, user.isOwner);
+    const v = entry.current_version ? await version(env, entry.current_version) : null;
+    return json({ uploadId: id, completed: true, parts: [], entry: await view(env, entry, user), size: v?.size || 0, partSize: MULTIPART_PART });
+  }
+  if (upload.expires_at < now()) throw new StorageError('Upload expired. Start a new upload.', 410);
+  if (upload.entry_id) await authorized(env, upload.entry_id, user, true); else await parentAllowed(env, upload.parent_id, user);
+  const parts = (await env.DB.prepare('SELECT part_number,size,etag,sha256 FROM upload_parts WHERE upload_id=? AND etag IS NOT NULL ORDER BY part_number').bind(id).all<{part_number:number;size:number;etag:string;sha256:string}>()).results.map(p => ({ partNumber: p.part_number, size: p.size, etag: p.etag, sha256: p.sha256 }));
+  return json({ uploadId: id, size: upload.size, name: upload.name, parentId: upload.parent_id || 'root', entryId: upload.entry_id, baseVersion: upload.base_version, partSize: MULTIPART_PART, expiresAt: upload.expires_at, parts });
+}
+async function multipartPart(request: Request, env: Env, user: User, id: string, number: number, token: string) {
+  if (!Number.isSafeInteger(number) || number < 1 || number > 10000) throw new StorageError('Invalid part number.');
+  const upload = await env.DB.prepare('SELECT * FROM uploads WHERE id=? AND created_by=?').bind(id, user.email).first<Upload>();
+  if (!upload || !upload.multipart_id) deny();
+  if (number > Math.ceil(upload.size / MULTIPART_PART)) throw new StorageError('Invalid part number.');
+  if (upload.expires_at < now()) throw new StorageError('Upload expired. Start a new upload.', 409);
+  await stillLocked(env, token);
+  if (upload.entry_id) await authorized(env, upload.entry_id, user, true); else await parentAllowed(env, upload.parent_id, user);
+  const bytes = await readBytes(request, MULTIPART_PART);
+  const expectedSize = Math.min(MULTIPART_PART, upload.size - (number - 1) * MULTIPART_PART);
+  if (bytes.length !== expectedSize) throw new StorageError('Invalid multipart part size.');
+  const sha = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
+  const expected = request.headers.get('x-content-sha256');
+  if (expected && expected.toLowerCase() !== sha) throw new StorageError('Part checksum does not match.', 400);
+  const prior = await env.DB.prepare('SELECT sha256,etag,size FROM upload_parts WHERE upload_id=? AND part_number=?').bind(id, number).first<{sha256:string;etag:string|null;size:number}>();
+  if (prior && (prior.sha256 !== sha || prior.size !== bytes.length)) throw new StorageError('Part retry differs from the original.', 409);
+  if (prior?.etag) return json({ partNumber: number, size: prior.size, etag: prior.etag, sha256: prior.sha256 });
+  await stillLocked(env, token);
+  if (!prior) await commit(env, token, [env.DB.prepare('INSERT INTO upload_parts(upload_id,part_number,size,etag,sha256,created_at) VALUES(?,?,?,NULL,?,?)').bind(id, number, bytes.length, sha, now())]);
+  // Persist the expected hash BEFORE R2: even an expired writer can only retry identical bytes.
+  const mp = env.FILES.resumeMultipartUpload(upload.object_key, upload.multipart_id);
+  const result = await mp.uploadPart(number, bytes);
+  await stillLocked(env, token);
+  await commit(env, token, [env.DB.prepare('UPDATE upload_parts SET etag=? WHERE upload_id=? AND part_number=? AND sha256=?').bind(result.etag, id, number, sha)]);
+  return json({ partNumber: number, size: bytes.length, etag: result.etag, sha256: sha });
+}
+async function multipartComplete(env: Env, user: User, id: string, token: string) {
+  const upload = await env.DB.prepare('SELECT * FROM uploads WHERE id=? AND created_by=?').bind(id, user.email).first<Upload>();
+  if (!upload || !upload.multipart_id) {
+    const done = await env.DB.prepare('SELECT entry_id FROM versions WHERE source=? AND created_by=?').bind(`multipart:${id}`, user.email).first<{entry_id:string}>();
+    if (!done) deny();
+    return json({ entry: await view(env, (await authorized(env, done.entry_id, user, true)), user) });
+  }
+  if (upload.expires_at < now()) throw new StorageError('Upload expired. Start a new upload.', 409);
+  if (upload.entry_id) await authorized(env, upload.entry_id, user, true); else await parentAllowed(env, upload.parent_id, user);
+  await stillLocked(env, token);
+  if (upload.entry_id) {
+    const current = await row(env, upload.entry_id);
+    if (!current || current.current_version !== upload.base_version) throw new StorageError('Another version was saved first. Refresh and retry.', 409);
+  }
+  const parts = (await env.DB.prepare('SELECT part_number,size,etag FROM upload_parts WHERE upload_id=? ORDER BY part_number').bind(id).all<{part_number:number;size:number;etag:string}>()).results;
+  const expected = Math.ceil(upload.size / MULTIPART_PART) || 1;
+  if (parts.length !== expected || parts.some((p,i) => p.part_number !== i + 1 || !p.etag) || parts.reduce((n,p)=>n+p.size,0) !== upload.size) throw new StorageError('Multipart upload is incomplete.', 409);
+  let stored = await env.FILES.head(upload.object_key);
+  if (!stored) {
+    const mp = env.FILES.resumeMultipartUpload(upload.object_key, upload.multipart_id);
+    await mp.complete(parts.map(p => ({ partNumber: p.part_number, etag: p.etag })));
+    stored = await env.FILES.head(upload.object_key);
+  }
+  // Recovery when R2 completed but the preceding request lost its D1 commit.
+  if (!stored || stored.size !== upload.size || stored.customMetadata?.cabinetUploadId !== id) throw new StorageError('Cloud storage verification failed. Retry the upload.', 502);
+  const idEntry = upload.entry_id || upload.id, entry = await row(env, idEntry);
+  if (!entry || entry.trashed) deny();
+  if (upload.entry_id) await authorized(env, idEntry, user, true); else await parentAllowed(env, entry.parent_id, user);
+  await stillLocked(env, token);
+  const versionId = crypto.randomUUID(), timestamp = now();
+  await commit(env, token, [
+    env.DB.prepare('INSERT INTO versions(id,entry_id,object_key,size,mime,created_at,created_by,source,sha256) SELECT ?,?,?,?,?,?,?,?,NULL WHERE EXISTS(SELECT 1 FROM entries WHERE id=? AND current_version IS ? AND trashed=0)').bind(versionId,idEntry,upload.object_key,upload.size,upload.mime,timestamp,user.email,`multipart:${id}`,idEntry,upload.base_version),
+    env.DB.prepare('UPDATE entries SET current_version=?,mime=?,updated_at=? WHERE id=? AND current_version IS ? AND EXISTS(SELECT 1 FROM versions WHERE id=?)').bind(versionId,upload.mime,timestamp,idEntry,upload.base_version,versionId),
+    env.DB.prepare('DELETE FROM uploads WHERE id=? AND EXISTS(SELECT 1 FROM versions WHERE id=?)').bind(id,versionId),
+    audit(env,idEntry,user,upload.entry_id?'upload_version':'upload'),
+  ]);
+  const committed = await version(env, versionId);
+  if (!committed) throw new StorageError('The file changed while it was uploading. Refresh and retry.', 409);
+  return json({ entry: await view(env, (await row(env,idEntry))!, user) });
+}
+async function multipartAbort(env: Env, user: User, id: string, token: string) {
+  const upload = await env.DB.prepare('SELECT * FROM uploads WHERE id=? AND created_by=?').bind(id,user.email).first<Upload>();
+  if (!upload || !upload.multipart_id) deny();
+  if (upload.entry_id) await authorized(env, upload.entry_id,user,true); else await parentAllowed(env,upload.parent_id,user);
+  await env.FILES.resumeMultipartUpload(upload.object_key,upload.multipart_id).abort();
+  await stillLocked(env,token);
+  const referenced = await env.DB.prepare('SELECT id FROM versions WHERE object_key=?').bind(upload.object_key).first();
+  if (!referenced) await env.FILES.delete(upload.object_key);
+  await stillLocked(env,token);
+  await commit(env,token,[env.DB.prepare('DELETE FROM uploads WHERE id=?').bind(id),env.DB.prepare("DELETE FROM entries WHERE id=? AND kind='file' AND current_version IS NULL").bind(id)]);
+  return new Response(null,{status:204});
 }
 async function saveUpload(
   env: Env,
@@ -577,6 +703,7 @@ async function finish(
     await request.body?.cancel();
     return json({ entry: await view(env, entry, user) });
   }
+  if (upload.source?.startsWith('multipart:')) throw new StorageError('Use the multipart part and completion endpoints.', 409);
   // Reject revoked access before reading the upload body.
   if (upload.entry_id) await authorized(env, upload.entry_id, user, true);
   else await parentAllowed(env, upload.parent_id, user);
@@ -872,29 +999,62 @@ async function trashEntry(
   return json({ entry: await view(env, (await row(env, id))!, user, true) });
 }
 async function download(
+  request: Request,
   env: Env,
   user: User,
   id: string,
   versionId: string | null,
+  method = 'GET',
+  rangeHeader: string | null = null,
 ) {
   const entry = await authorized(env, id, user, false, user.isOwner);
   if (entry.kind !== 'file') deny();
   const v = await version(env, versionId || entry.current_version!);
   if (!v || v.entry_id !== id) deny();
-  const object = await env.FILES.get(v.object_key);
-  if (!object)
-    throw new StorageError(
-      'Stored content is missing. Check your backup.',
-      502,
-    );
-  return new Response(object.body, {
-    headers: {
+  const head = await env.FILES.head(v.object_key);
+  if (!head) throw new StorageError('Stored content is missing. Check your backup.', 502);
+  const etag = `"${v.id}"`;
+  const ifMatch = request.headers.get('If-Match');
+  if (ifMatch && ifMatch !== '*' && !ifMatch.split(',').map(x => x.trim()).includes(etag))
+    return new Response(null, { status: 412, headers: { ETag: etag } });
+  const ifRange = request.headers.get('If-Range');
+  let range: { start: number; end: number; length: number } | null = null;
+  if (method === 'GET' && rangeHeader && (!ifRange || ifRange.trim() === etag)) {
+    try { range = parseRange(rangeHeader, v.size); }
+    catch (error) { if (error instanceof StorageError && error.status === 416) return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${v.size}`, ETag: etag } }); throw error; }
+  }
+  const headers = new Headers({
       'Content-Type': mimeOf(v.mime),
       'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(entry.name)}`,
-      'Content-Length': String(v.size),
+      'Content-Length': String(range ? range.length : v.size),
+      'Accept-Ranges': 'bytes',
+      ETag: etag,
+      ...(range ? { 'Content-Range': `bytes ${range.start}-${range.end}/${v.size}` } : {}),
       'X-Content-Type-Options': 'nosniff',
-    },
-  });
+    });
+  if (method === 'HEAD') return new Response(null, { status: range ? 206 : 200, headers });
+  const object = await env.FILES.get(v.object_key, range ? { range: { offset: range.start, length: range.length } } : undefined);
+  if (!object) throw new StorageError('Stored content is missing. Check your backup.', 502);
+  return new Response(object.body, { status: range ? 206 : 200, headers });
+}
+
+function parseRange(value: string, size: number) {
+  if (size === 0) throw new StorageError('Requested range is not satisfiable.', 416);
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim());
+  if (!match || (!match[1] && !match[2]))
+    throw new StorageError('Requested range is not satisfiable.', 416);
+  let start: number, end: number;
+  if (!match[1]) {
+    const suffix = Number(match[2]);
+    if (!Number.isSafeInteger(suffix) || suffix <= 0) throw new StorageError('Requested range is not satisfiable.', 416);
+    start = Math.max(0, size - suffix); end = size - 1;
+  } else {
+    start = Number(match[1]); end = match[2] ? Number(match[2]) : size - 1;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= size)
+      throw new StorageError('Requested range is not satisfiable.', 416);
+    end = Math.min(end, size - 1);
+  }
+  return { start, end, length: end - start + 1 };
 }
 async function versions(env: Env, user: User, id: string) {
   await authorized(env, id, user, false, user.isOwner);
@@ -1078,6 +1238,15 @@ export async function handleStorage(
         201,
       );
     }
+    if (path === '/api/multipart' && method === 'POST')
+      return multipartCreate(request, env, user, token!);
+    const multipartCompletePath = path.match(/^\/api\/multipart\/([^/]+)\/complete$/);
+    if (multipartCompletePath && method === 'POST') return multipartComplete(env, user, multipartCompletePath[1], token!);
+    const multipart = path.match(/^\/api\/multipart\/([^/]+)$/);
+    if (multipart && method === 'GET') return multipartStatus(env, user, multipart[1]);
+    if (multipart && method === 'DELETE') return multipartAbort(env, user, multipart[1], token!);
+    const part = path.match(/^\/api\/multipart\/([^/]+)\/parts\/(\d+)$/);
+    if (part && method === 'PUT') return multipartPart(request, env, user, part[1], Number(part[2]), token!);
     const upload = path.match(/^\/api\/uploads\/([^/]+)$/);
     if (upload && method === 'PUT')
       return finish(request, env, user, upload[1], token!);
@@ -1091,8 +1260,8 @@ export async function handleStorage(
     );
     if (!match) return null;
     const [, id, action] = match;
-    if (action === 'download' && method === 'GET')
-      return download(env, user, id, url.searchParams.get('version'));
+    if (action === 'download' && ['GET', 'HEAD'].includes(method))
+      return download(request, env, user, id, url.searchParams.get('version'), method, request.headers.get('Range'));
     if (action === 'versions' && method === 'GET')
       return versions(env, user, id);
     if (action === 'access' && ['GET', 'PUT'].includes(method))

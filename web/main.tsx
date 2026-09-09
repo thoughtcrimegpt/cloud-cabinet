@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 import { importFolder } from './folder-import.ts';
+import { uploadMedia } from './media-upload.ts';
 type Entry = {
   id: string;
   parentId: string | null;
@@ -38,6 +39,7 @@ type Me = {
   email: string;
   isOwner: boolean;
   maxUploadBytes: number;
+  maxMultipartBytes?: number;
   maxStorageBytes: number;
   maintenance?: boolean;
 };
@@ -392,44 +394,18 @@ function App() {
   };
   const sendFile = async (file: globalThis.File, entry?: Entry) => {
     if (!me || busy) return;
-    if (file.size > me.maxUploadBytes) {
-      setError('This release accepts files up to 20 MiB.');
+    if (file.size > (me.maxMultipartBytes || me.maxUploadBytes)) {
+      setError('This file exceeds the upload limit for this installation.');
       return;
     }
     await mutate(async () => {
       try {
         setProgress(`Preparing ${file.name}`);
-        const prepared = await api<{ url: string }>('/api/uploads', {
+        await uploadMedia(file, {
           parentId: entry?.parentId || parent,
           name: entry?.name || file.name,
-          size: file.size,
-          mime: file.type || 'application/octet-stream',
-          ...(entry
-            ? { entryId: entry.id, baseVersion: entry.currentVersion }
-            : {}),
-        });
-        await new Promise<void>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('PUT', prepared.url);
-          xhr.timeout = 180000;
-          xhr.upload.onprogress = (e) =>
-            setProgress(
-              `${file.name}: ${e.lengthComputable ? Math.round((100 * e.loaded) / e.total) + '%' : 'uploading'}`,
-            );
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) resolve();
-            else {
-              let msg = 'Upload failed. Please retry.';
-              try {
-                msg = JSON.parse(xhr.responseText).error || msg;
-              } catch {}
-              reject(new Error(msg));
-            }
-          };
-          xhr.onerror = () => reject(new Error('Upload connection failed.'));
-          xhr.ontimeout = () => reject(new Error('Upload timed out.'));
-          xhr.send(file);
-        });
+          ...(entry ? { entryId: entry.id, baseVersion: entry.currentVersion } : {}),
+        }, api, setProgress, me.email);
         close();
       } finally {
         setProgress('');
@@ -750,7 +726,7 @@ function App() {
           if (f) void sendFile(f);
         }}
       />
-      <input type="file" hidden ref={folderUploadRef} {...({ webkitdirectory: 'true', directory: 'true' } as React.InputHTMLAttributes<HTMLInputElement>)} onChange={(e) => { const files=Array.from(e.target.files || []); e.target.value=''; void mutate(async()=>{ try { const result=await importFolder(files,parent,api,setProgress); setError(result.errors.length ? `${result.saved} saved. ${result.errors.length} could not be uploaded. ${result.errors.slice(0,8).join(' ')}` : ''); } finally {setProgress('');} }).catch(()=>{}); }} />
+      <input type="file" hidden ref={folderUploadRef} {...({ webkitdirectory: 'true', directory: 'true' } as React.InputHTMLAttributes<HTMLInputElement>)} onChange={(e) => { const files=Array.from(e.target.files || []); e.target.value=''; void mutate(async()=>{ try { const result=await importFolder(files,parent,api,setProgress,me?.email || ''); setError(result.errors.length ? `${result.saved} saved. ${result.errors.length} could not be uploaded. ${result.errors.slice(0,8).join(' ')}` : ''); } finally {setProgress('');} }).catch(()=>{}); }} />
       <input
         type="file"
         hidden

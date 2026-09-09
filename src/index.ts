@@ -1,5 +1,5 @@
 import { authenticate, configured, validMutation } from './auth.ts';
-import { handleStorage } from './storage.ts';
+import { handleStorage, MAX_MULTIPART, MULTIPART_PART } from './storage.ts';
 import { handleSettings } from './settings.ts';
 import { handleGmail, runGmailSchedule } from './gmail.ts';
 import { handleWorkflows } from './workflows.ts';
@@ -64,6 +64,8 @@ export default {
             ...user,
             maxStorageBytes: Number(env.MAX_STORAGE_BYTES) || 10000000000,
             maxUploadBytes: 20 * 1024 * 1024,
+            maxMultipartBytes: MAX_MULTIPART,
+            multipartPartBytes: MULTIPART_PART,
             maintenance: env.MAINTENANCE_MODE === 'true',
           }),
         );
