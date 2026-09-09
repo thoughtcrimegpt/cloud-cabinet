@@ -22,4 +22,4 @@ Use the [official R2 pricing page](https://developers.cloudflare.com/r2/pricing/
 
 This is an application upload guard, **not a spending cap at Cloudflare**. It counts original files, saved revisions, retained trash, and in-progress reservations. Version restore reuses the old object instead of storing identical bytes again. Operations, other apps in your account, and objects uploaded directly to the bucket can still affect your bill.
 
-The current app caps browser uploads at 20 MiB per file. Larger-file multipart uploads are not included in this release. Do not buy storage assuming this version supports arbitrarily large files.
+This engineering preview supports browser uploads up to 100 GiB per file, using resumable 16 MiB multipart requests above 20 MiB. Raising the total quota does not raise that per-file limit. See [media-drive limitations](media-drive.md) before planning a production media workload.

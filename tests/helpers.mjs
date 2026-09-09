@@ -73,6 +73,7 @@ export class MemoryR2 {
       return null;
     this.objects.set(key, {
       bytes,
+      etag: `"${Buffer.from(bytes).toString('hex').slice(0, 32)}-${bytes.byteLength}"`,
       httpMetadata: options.httpMetadata,
       customMetadata: options.customMetadata,
     });
@@ -83,6 +84,7 @@ export class MemoryR2 {
     return object
       ? {
           size: object.bytes.byteLength,
+          etag: object.etag,
           httpMetadata: object.httpMetadata,
           customMetadata: object.customMetadata,
         }
@@ -91,12 +93,57 @@ export class MemoryR2 {
   async delete(key) {
     this.objects.delete(key);
   }
-  async get(key) {
+  async get(key, options = {}) {
     const object = this.objects.get(key);
     if (!object) return null;
+    let bytes = object.bytes;
+    if (options.range && typeof options.range.offset === 'number')
+      bytes = object.bytes.slice(options.range.offset, options.range.offset + options.range.length);
     return {
-      body: new Response(object.bytes).body,
+      body: new Response(bytes).body,
+      size: bytes.byteLength,
+      etag: object.etag,
       httpMetadata: object.httpMetadata,
+    };
+  }
+  async createMultipartUpload(key, options = {}) {
+    const uploadId = `multipart-${this.objects.size}-${Math.random()}`;
+    if (!this.multipart) this.multipart = new Map();
+    this.multipart.set(uploadId, { key, parts: new Map(), options, completed: false, aborted: false });
+    const self = this;
+    return {
+      key, uploadId,
+      async uploadPart(partNumber, value) {
+        const state = self.multipart.get(uploadId); if (!state || state.aborted || state.completed) throw Error('multipart closed');
+        const bytes = value instanceof Uint8Array ? new Uint8Array(value) : new Uint8Array(await new Response(value).arrayBuffer());
+        const etag = `"part-${partNumber}-${bytes.byteLength}"`; state.parts.set(partNumber, { bytes, etag }); return { partNumber, etag };
+      },
+      async complete(uploadedParts) {
+        const state = self.multipart.get(uploadId); if (!state || state.aborted || state.completed) throw Error('multipart closed');
+        const bytes = new Uint8Array(uploadedParts.reduce((n, p) => n + state.parts.get(p.partNumber).bytes.byteLength, 0)); let offset = 0;
+        for (const p of uploadedParts) { const part = state.parts.get(p.partNumber); bytes.set(part.bytes, offset); offset += part.bytes.byteLength; }
+        state.completed = true; await self.put(key, bytes, options); return await self.head(key);
+      },
+      async abort() { const state = self.multipart.get(uploadId); if (state) state.aborted = true; },
+    };
+  }
+  resumeMultipartUpload(key, uploadId) {
+    const self = this, state = this.multipart?.get(uploadId);
+    if (!state || state.key !== key) throw Error('multipart missing');
+    return {
+      key, uploadId,
+      async uploadPart(partNumber, value) {
+        if (state.aborted || state.completed) throw Error('multipart closed');
+        const bytes = value instanceof Uint8Array ? new Uint8Array(value) : new Uint8Array(await new Response(value).arrayBuffer());
+        const etag = `"part-${partNumber}-${bytes.byteLength}"`; state.parts.set(partNumber, { bytes, etag }); return { partNumber, etag };
+      },
+      async complete(uploadedParts) {
+        if (state.aborted || state.completed) throw Error('multipart closed');
+        const bytes = new Uint8Array(uploadedParts.reduce((n, p) => n + state.parts.get(p.partNumber).bytes.byteLength, 0)); let offset = 0;
+        for (const p of uploadedParts) { const part = state.parts.get(p.partNumber); bytes.set(part.bytes, offset); offset += part.bytes.byteLength; }
+        state.completed = true; await self.put(key, bytes, state.options); return await self.head(key);
+      },
+      async abort() { state.aborted = true; },
     };
   }
 }

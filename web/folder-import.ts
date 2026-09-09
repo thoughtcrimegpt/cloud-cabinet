@@ -1,6 +1,7 @@
+import { uploadMedia } from './media-upload.ts';
 type UploadFile = File & {webkitRelativePath:string};
 type Request = <T>(url:string,body?:unknown,method?:string)=>Promise<T>;
-export async function importFolder(files:UploadFile[],parent:string,api:Request,onProgress:(text:string)=>void) {
+export async function importFolder(files:UploadFile[],parent:string,api:Request,onProgress:(text:string)=>void,identity='') {
   if(!files.length)return {saved:0,errors:[] as string[]};
   if(files.length>2000)throw new Error('Select a smaller folder, up to 2,000 files per batch.');
   const folders=new Map<string,string>([['',parent]]);
@@ -10,7 +11,7 @@ export async function importFolder(files:UploadFile[],parent:string,api:Request,
     const parts=path.split('/');
     try {
       if(parts.length>99 || parts.some(p=>!p||p==='.'||p==='..'||p.length>255||/[\\\u0000-\u001f]/.test(p)))throw new Error('Unsupported folder path.');
-      if(file.size>20*1024*1024)throw new Error('File exceeds 20 MiB.');
+      if(file.size>100*1024**3)throw new Error('File exceeds 100 GiB.');
       onProgress(`${saved+errors.length+1}/${files.length}: ${path}`);
       let current=parent,prefix='';
       for(const name of parts.slice(0,-1)) {
@@ -33,9 +34,7 @@ export async function importFolder(files:UploadFile[],parent:string,api:Request,
         }
         folders.set(prefix,current);
       }
-      const upload=await api<{url:string}>('/api/uploads',{parentId:current,name:file.name,size:file.size,mime:file.type || 'application/octet-stream'});
-      const response=await fetch(upload.url,{method:'PUT',body:file,signal:AbortSignal.timeout(180000)});
-      if(!response.ok){const body=await response.json() as {error?:string};throw new Error(body.error || 'Upload failed.');}
+      await uploadMedia(file,{parentId:current,name:file.name},api,onProgress,identity);
       saved++;
     } catch(error) {errors.push(`${path}: ${error instanceof Error?error.message:'Upload failed.'}`);}
   }
